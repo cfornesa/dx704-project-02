@@ -1,0 +1,102 @@
+To gauge accuracy, I wanted to use cross validation, as stated in: https://stackoverflow.com/questions/65197392/facebook-prophet-cross-validation-with-monthly-data-workaround-pandas-timedel
+
+But I ran into issues and placed the error in ChatGPT.
+
+
+
+Prompt:
+---------------------------------------------------------------------------
+ValueError                                Traceback (most recent call last)
+Cell In[56], line 3
+      1 df_cv_2 = cross_validation(
+      2     model = mod_2, 
+----> 3     initial = pd.to_timedelta(12, unit="M"), 
+      4     horizon = pd.to_timedelta(12, unit="M")
+      5 )
+
+File ~/.local/lib/python3.12/site-packages/pandas/core/tools/timedeltas.py:184, in to_timedelta(arg, unit, errors)
+    182 if unit is not None:
+    183     unit = parse_timedelta_unit(unit)
+--> 184     disallow_ambiguous_unit(unit)
+    186 if errors not in ("ignore", "raise", "coerce"):
+    187     raise ValueError("errors must be one of 'ignore', 'raise', or 'coerce'.")
+
+File pandas/_libs/tslibs/timedeltas.pyx:825, in pandas._libs.tslibs.timedeltas.disallow_ambiguous_unit()
+
+File pandas/_libs/tslibs/timedeltas.pyx:827, in pandas._libs.tslibs.timedeltas.disallow_ambiguous_unit()
+
+ValueError: Units 'M', 'Y', and 'y' are no longer supported, as they do not represent unambiguous timedelta values durations.
+
+
+
+Response:
+You hit this because **`pandas.Timedelta` can’t represent months**—they’re ambiguous in length—so `pd.to_timedelta(..., unit="M")` raises:
+
+> Units 'M' and 'Y' are no longer supported …
+
+For Prophet’s `cross_validation`, use **day-based durations** (strings like `"365 days"`) or build **explicit monthly cutoffs**. Here are two clean ways:
+
+---
+
+## Option 1 — Use day-based strings (simple & works well)
+
+Pick day counts that correspond to the number of months you want:
+
+```python
+from prophet.diagnostics import cross_validation
+
+# ≈ 12 months horizon, ~3 years initial, monthly-ish step
+df_cv_2 = cross_validation(
+    model=mod_2,
+    initial="1095 days",   # ~ 36 months
+    horizon="365 days",    # ~ 12 months
+    period="30 days"       # step between cutoffs ≈ 1 month
+)
+```
+
+Notes:
+
+* Use `"365 days"` (or `"366 days"` if you want to be conservative) instead of “12 months”.
+* `initial` should be large enough to fit your model; `period` < `horizon`.
+
+---
+
+## Option 2 — Exact monthly cutoffs (calendar-aware)
+
+If you really want **calendar months**, give `cross_validation` a list of monthly cutoff dates yourself and keep the horizon in days:
+
+```python
+import pandas as pd
+from prophet.diagnostics import cross_validation
+
+hist = mod_2.history.sort_values("ds")
+
+# how many months ahead to forecast in each fold
+months_ahead = 12
+h = pd.DateOffset(months=months_ahead)
+
+# make monthly cutoffs (e.g., start after 36 months of training)
+cutoffs = pd.date_range(
+    start=hist["ds"].min() + pd.DateOffset(months=36),
+    end=hist["ds"].max() - h,     # ensure horizon fits after cutoff
+    freq="MS"                      # month start cutoffs
+)
+
+df_cv_2 = cross_validation(
+    model=mod_2,
+    cutoffs=cutoffs.to_list(),     # explicit monthly cutoffs
+    horizon="365 days"             # keep horizon in days
+)
+```
+
+This way you avoid ambiguous “months” in durations, but you still evaluate a \~12-month horizon.
+
+---
+
+### Quick gotchas
+
+* Don’t pass integers to `predict`/CV durations; use strings like `"365 days"` or a `Timedelta`.
+* Months/years are **not** valid `Timedelta` units; use days (or build `cutoffs`).
+* Ensure `last cutoff + horizon ≤ last date` in history; otherwise CV will error.
+
+If you tell me your series frequency (daily vs monthly) and the training span, I can suggest exact `initial/period/horizon` values tailored to your data.
